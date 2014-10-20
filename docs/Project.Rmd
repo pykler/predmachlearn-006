@@ -1,0 +1,326 @@
+---
+title: "Prediction Assignment"
+subtitle: "Weight Lifting Exercise Dataset"
+author: "Hatem Nassrat"
+# date: "October 18, 2014"
+date: "`r format(Sys.Date(), format='%B %d, %Y')`"
+output:
+#  html_document:
+  rmarkdown::html_vignette:
+    toc: true
+    toc_depth: 4
+vignette: >
+  %\VignetteIndexEntry{Prediction Assignment - Hatem Nassrat}
+  %\VignetteEngine{knitr::rmarkdown}
+  \usepackage[utf8]{inputenc}
+---
+
+```{r, echo=FALSE}
+library(knitr)
+opts_chunk$set(warning=FALSE, error=FALSE, message=FALSE, collapse=TRUE)
+```
+
+## Background
+
+Some background introducing the problem taken directly from the assignment:
+
+> Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement – a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. In this project, your goal will be to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways. More information is available from the website here: http://groupware.les.inf.puc-rio.br/har (see the section on the Weight Lifting Exercise Dataset).
+
+This prediction assignment aims to correctly predict whether a weight lifting excersize was performed correctly (classe `A`) or incorrectly. If incorrect also determines how it was incorrect (classe `B`, `C`, `D`, `E`).
+
+> Participants were asked to perform one set of 10 repetitions
+of the Unilateral Dumbbell Biceps Curl in ve dierent fashions:
+exactly according to the specication (Class A), throwing
+the elbows to the front (Class B), lifting the dumbbell
+only halfway (Class C), lowering the dumbbell only halfway
+(Class D) and throwing the hips to the front (Class E). Class
+A corresponds to the specied execution of the exercise,
+while the other 4 classes correspond to common mistakes.
+Participants were supervised by an experienced weight lifter
+to make sure the execution complied to the manner they
+were supposed to simulate.
+> -- <cite>[[Velloso 2013]][1]</cite>
+
+## Data and Approach Overview
+
+The dataset used in this excersize is a subset of the full WLE dataset. A labeled training set around 20,000 entries long and an unlabelled test set 20 entries long were provided for this excersize.
+
+After inspecting the dataset and reading [[Velloso 2013]][1] it was apparent that the dataset is a continous flow of data with a sliding window that was snapshot every 2.5s. At the snapshot some aggregate variables (mean, max, min, skewness, ...) were calculated. These aggregates of the sliding window is what [[Velloso 2013]][1] used to create their predictor and achieved a near perfect prediction model. Unfortunaley after inspecting the test set, it is comprised of single datapoints and not ones with `new_window == 'yes'` therefore not including any of the aggregate parameters.
+
+To approach this problem two methods can be attempted. The first is to ignore the aggregated variables and just use the raw data to predict the `classe` of the excersize. The second is to find and use a good data imputer that can then be used on the test set to impute the missing aggregate data. With each approach multiple models will be tested. Finally the best of all the models would be delivered.
+
+## Data Reading and Clensing
+
+Should be self explanatory, will leave you with the following code snippet
+
+```{r}
+## Project init code
+project_dir <- '~/projects/predmachlearn/project'
+library(data.table)
+library(caret)
+set.seed(622253) # for reproducability
+
+## Data Loading Functions
+
+pml.fread <- function(fn) {
+  # data.table file read wrapper
+  na <- c('NA', '', '#DIV/0!') # seen in the csv
+  pml_data <- fread(paste(project_dir, fn, sep='/'), na.strings=na)
+  return(pml_data)
+}
+
+pml.read.agg <- function(fn) {
+  # reading data for approach 2
+  pml_data <- pml.fread(fn)
+  pml_data <- pml_data[, -c(1:7), with=FALSE]
+  pml_data$classe <- as.factor(pml_data$classe)
+  return(pml_data)
+}
+
+pml.read.noagg <- function(fn) {
+  # reading data for approach 1
+  pml_data <- pml.read.agg(fn)
+  pml_data <- pml_data[,
+    !grepl(
+      '^(kurtosis|skewness|max|min|amplitude|var|avg|stddev)_',
+      colnames(pml_data)
+    ),
+    with=FALSE
+  ]
+  return(pml_data)
+}
+```
+
+to properly estimate the out of sample error the data needs to be split into a training set and test set. From the course best practices, a 60/40 split will be used.
+
+```{r}
+pml.split <- function(pml_data) {
+  # returns the indices of training data
+  return(createDataPartition(pml_data$classe, p = 0.6)[[1]])
+}
+```
+
+## Model Gen and Parameter Tuning via Cross Validation
+
+Using the training data only (60% of the full labelled dataset), training of the model will be perfomed. Repeated Cross Validation will be done during training to pick the best parameters for each model used. Further the best model accross all algorithms tested and cross validated will be choosen. Above two approaches were described, the first approach of removing the agg data columns will be used.
+
+First step is to load the data and sample/split it
+
+```{r}
+pml_data_noagg <- pml.read.noagg('data/pml-training.csv')
+train_i <- pml.split(pml_data_noagg)
+pml_train <- pml_data_noagg[train_i,]
+pml_test <- pml_data_noagg[-train_i,]
+dim(pml_train)
+dim(pml_test)
+```
+
+Check data to see if there are any predictors still around that are not needed
+
+```{r}
+library(FSelector)
+information.gain(classe ~ ., data=pml_train) > 0
+```
+
+All 53 predictors produce information gain, lets run PCA to reduce them.
+
+```{r}
+pml_pca <- preProcess(pml_train[,!'classe',with=FALSE], method='pca', thresh=0.8)
+pml_pca
+```
+
+to achieve 80% of the variance, the dimensions were reduced as can be seen above. The data is then transformed with pca.
+
+
+```{r}
+pml_train_pca <- predict(pml_pca, pml_train[, !"classe", with = FALSE])
+pml_train_pca$classe <- pml_train$classe
+```
+
+The goal is to test both pca and non-pca data with the algorithms below, it was quickly apparent for this approach, pca reduced the quality of the data. Therefore for most test runs only non-pca data will be used. See the first two algorithm runs to see the comparison.
+
+### Algorithms
+
+To pick a winner, the following classification algorithms will be tested
+
+model                                 | method    | type              | packages      | tuning params
+------------------------------------- | --------- | ----------------- | ------------- | --------------
+k-Nearest Neighbors                   | kknn      | Dual Use          | kknn          |
+CART                                  | rpart     | Dual Use          | rpart         | cp
+Multivariate Adaptive Reg Spline      | earth     | Dual Use          | earth         | nprune, degree
+SVM with Radial Basis Function Kernel | svmRadialCost | Dual Use      | kernlab       | C
+C5.0                                  | C5.0      | Classification    | C50, plyr     | trials, model, winnow
+Penalized Multinomial Regression      | multinom  | Classification    | nnet          | decay
+Random Forest                         | rf        | Dual Use          | randomForest  | mtry
+Partial Least Squares                 | kernelpls | Dual Use          | pls           | ncomp
+
+> sampled from [caret model list][2]
+
+### Training and Tuning with Cross Validation
+
+```{r}
+pml.train.any <- function(pml_data, method, suffix, tuneGrid=NULL) {
+  # tuneGrid arg was an after thought, wasn't really used, but good to have
+  tc <- trainControl("repeatedcv", repeats=5, selectionFunction="oneSE", num=5)
+  modFit <- train(
+    classe ~ ., data=pml_data, method = method, tuneGrid=tuneGrid,
+    trControl = tc, metric = "Accuracy")
+  save(modFit, file=paste0(project_dir, '/models/', method, suffix, '.Rdata'))
+  return(modFit)
+}
+```
+
+#### CART: rpart
+
+```{r}
+# modFit <- pml.train.any(pml_train_pca, method='rpart', '_noagg_pca')
+# modFit <- pml.train.any(pml_train_pca, method='rpart', '_noagg')
+```
+
+The orig data without PCA performed better. Here are the cross validation results for the resulting CART model. The best model performed with around in-sample 50% accuracy accross the classes (with PCA the accuracy was 36%). 
+
+```{r, echo=FALSE, results='asis'}
+print_model_cv <- function(fn) {
+  load(paste0(project_dir, '/models/', fn, '.Rdata'))
+  cat("<table class='container'><tr>")
+  cat("<td><pre class='sourceCode' style='font-size:80%'>")
+  knit_print(modFit)
+  cat("</pre></td>")
+  cat("<td>")
+  knit_print(ggplot(modFit) + theme(legend.position="top"))
+  cat("</td>")
+  cat("</tr></table>")
+}
+# print_model_cv('rpart_noagg_pca')
+print_model_cv('rpart_noagg')
+```
+
+
+#### k-Nearest Neighbors: kknn
+
+```{r}
+# modFit <- pml.train.any(pml_train_pca, method='kknn', '_noagg_pca')
+# modFit <- pml.train.any(pml_train, method='kknn', '_noagg')
+```
+
+Again the orig data without PCA performed better. Here are the cross validation results for the resulting KNN model. The best model performed with around 98% in-sample accuracy accross the classes (with PCA the accuracy was 95%).
+
+```{r, echo=FALSE, results='asis'}
+# print_model_cv('kknn_noagg_pca')
+print_model_cv('kknn_noagg')
+```
+
+Moving forward only non pca data will be used due to these findings.
+
+#### Multinomial Regression: multinom
+
+Accuracy of 64% with repeated cross validation and parameter tuning was the best produced model. The full details below.
+
+```{r}
+# modFit <- pml.train.any(pml_train, method='multinom', '_noagg')
+```
+
+```{r, echo=FALSE, results='asis'}
+print_model_cv('multinom_noagg')
+```
+
+#### C5.0
+
+Cross validation produced a model with an accuracy of 99%. The details follow.
+
+```{r}
+# modFit <- pml.train.any(pml_train, method='C5.0', '_noagg')
+```
+
+```{r, echo=FALSE, results='asis'}
+print_model_cv('C5.0_noagg')
+```
+
+#### svmRadialCost
+
+With all the parameters tuned via cross validation the best model found produced an accuracy of 92%. The details follow.
+
+```{r}
+# modFit <- pml.train.any(pml_train, method='svmRadialCost', '_noagg')
+```
+
+```{r, echo=FALSE, results='asis'}
+print_model_cv('svmRadialCost_noagg')
+```
+
+#### MARS: earth
+
+After cross validation the best model found produced an accuracy of 90%. The details follow.
+
+```{r}
+# modFit <- pml.train.any(pml_train, method='earth', '_noagg')
+```
+
+```{r, echo=FALSE, results='asis'}
+print_model_cv('earth_noagg')
+```
+
+#### Random Forest: rf
+
+99% accuracy was found after cross validation and parameter tuning.
+
+```{r}
+# modFit <- pml.train.any(pml_train, method='rf', '_noagg')
+```
+
+```{r, echo=FALSE, results='asis'}
+print_model_cv('rf_noagg')
+```
+
+#### Partial Least Squares: kernelpls
+
+The best model found produced an accuracy of 37%, this is by far the worst out of the algorithms that were tested.
+
+```{r}
+# modFit <- pml.train.any(pml_train, method='kernelpls', '_noagg')
+```
+
+```{r, echo=FALSE, results='asis'}
+print_model_cv('kernelpls_noagg')
+```
+
+### Out-of-Sample Accuracy
+
+With the 40% of the dataset that was split out of the training set, accuracy of each of the trained model will be determined. The accuracy can be seen in the figure below.
+
+```{r, fig.width=7}
+pml.load_model <- function(fn) {
+  load(paste0(project_dir, '/models/', fn, '.Rdata'))
+  return(modFit)
+}
+pml.accuracy <- function(modFit, pml_data) {
+  res <- predict(modFit, newdata=pml_data) == pml_data$classe
+  return(sum(res) / length(res))
+}
+pml.load_and_acc <- function(fn, pml_data) {
+  modFit <- pml.load_model(paste0(fn, '_noagg'))
+  return(pml.accuracy(modFit, pml_data))
+}
+pml.algos <- c(
+  'rpart', 'kknn', 'multinom', 'C5.0',
+  'svmRadialCost', 'earth', 'rf', 'kernelpls'
+)
+res <- lapply(pml.algos,function(x){return(c(x, pml.load_and_acc(x, pml_test)))})
+res <- as.data.frame(do.call(rbind, res))
+colnames(res) <- c('Method', 'Accuracy')
+# res[order(res$Accuracy, decreasing=TRUE),]
+ggplot(res, aes(Method, Accuracy)) + geom_bar()
+```
+
+
+## Conclusions and Summary
+
+
+
+## Future Work
+
+Briefly an approach was mentioned earlier to make use of the sliding window data. This can be done by combining multiple models. The first model would impute the aggregate data which would also be used to impute the aggregate fields on the test set. The second model would be used to classify the full record, with all its fields into the proper class. A good first candidate for the imputation is knnImpute, and for the classifier is C5.0 since that performed the best results here. 
+
+[//]: # --- REFERENCES ---
+[1]:http://groupware.les.inf.puc-rio.br/work.jsf?p1=11201
+[2]:http://topepo.github.io/caret/modelList.html
