@@ -73,7 +73,10 @@ pml.read.agg <- function(fn) {
   # reading data for approach 2
   pml_data <- pml.fread(fn)
   pml_data <- pml_data[, -c(1:7), with=FALSE]
-  pml_data$classe <- as.factor(pml_data$classe)
+  if (!is.null(pml_data$classe)) {
+    # this field is not present for testing set
+    pml_data$classe <- as.factor(pml_data$classe)
+  }
   return(pml_data)
 }
 
@@ -318,21 +321,21 @@ res <- as.data.frame(do.call(rbind, res))
 # res[order(res$Accuracy, decreasing=TRUE),]
 
 qplot(Method, Accuracy, data=res, geom='bar', fill=cut_number(Accuracy, 3), stat='identity') +
-  geom_text(data=res,aes(label=sprintf('%.3f', Accuracy)), vjust=-0.5, size=4) +
+  geom_text(data=res,aes(label=sprintf('%.3f', Accuracy)), vjust=0, size=4) +
   theme(legend.position="none")
 ```
 
 
-As can be seen from the results displayed above, the top three models were using the algorithms '''C5.0''', '''rf''', '''kknn''' and were very close regarding their results. The following are the three confusion matricies for these approaches.
+As can be seen from the results displayed above, the top three models were using the algorithms *C5.0*, *rf*, *kknn* and were very close regarding their results. The following are the three confusion matricies for these approaches.
 
-```{r, echo=False}
+```{r, echo=FALSE}
 for (x in c('C5.0', 'rf', 'kknn')) {
-  print(paste('Confusion Matrix for', x))
-  print(pml.load_and_confuse(x, pml_test))
+  knit_print(paste('Confusion Matrix for', x))
+  knit_print(pml.load_and_confuse(x, pml_test))
 }
 ```
 
-A quick informal speed test showed that '''kknn''' is considerably slower than the two other algorithms to label a test set. That being said, the test set for the assignment is small enough that it does not matter. In the real world this maybe different, this point is elaborated on in the final remarks.
+A quick informal speed test showed that *kknn* is considerably slower than the two other algorithms to label a test set. That being said, the test set for the assignment is small enough that it does not matter. In the real world this maybe different, this point is elaborated on in the final remarks.
 
 ## Conclusions and Summary
 
